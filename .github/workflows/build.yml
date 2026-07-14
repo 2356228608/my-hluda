@@ -1,4 +1,4 @@
-name: Build Magic Frida
+name: Build Magic Frida (Florida Flow)
 
 on:
   workflow_dispatch:
@@ -10,8 +10,11 @@ jobs:
       contents: write
 
     steps:
-      - name: Checkout
+      - name: Checkout Florida Patches
         uses: actions/checkout@v4
+        with:
+          repository: 'Ylarod/Florida'
+          ref: 'main'
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -23,43 +26,64 @@ jobs:
         with:
           ndk-version: r25c
 
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
       - name: Install Dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y nodejs npm build-essential crossbuild-essential-arm64 crossbuild-essential-armhf git
+          sudo apt-get install -y build-essential crossbuild-essential-arm64 crossbuild-essential-armhf git jq
 
       - name: Get Latest Frida Version
         id: frida_ver
         run: |
           VERSION=$(curl -s https://api.github.com/repos/frida/frida/releases/latest | jq -r .tag_name)
           echo "VERSION=$VERSION" >> $GITHUB_ENV
-          echo "Frida Latest Version: $VERSION"
+          echo "Frida Version to Build: $VERSION"
 
-      - name: Clone Frida and Apply Ylarod Patches
+      - name: Clone Frida and Apply Florida Patches
         run: |
+          # 1. 克隆官方指定版本的 Frida
           git clone --recurse-submodules https://github.com/frida/frida.git
           cd frida
           git checkout ${{ env.VERSION }}
-          # 自动拉取并应用 Ylarod 的去特征补丁
-          git clone https://github.com/Ylarod/Florida.git ../Florida
-          cp -r ../Florida/patches/* ./
-          # 自动应用所有 patch
+          
+          # 2. 配置 Git 机器人信息防止打补丁报错
           git config --global user.email "actions@github.com"
           git config --global user.name "GitHub Actions"
-          git am *.patch || echo "Some patches skipped or applied manually"
+          
+          # 3. 将 Florida 的魔改补丁拷贝并应用到 Frida 源码中
+          cp -r ../patches ./
+          git am patches/*.patch || { echo "Applying patches failed!"; exit 1; }
 
-      - name: Build Frida Server for Android
+      - name: Build Frida Server for Android (ARM64)
         run: |
           cd frida
-          # 编译 arm64 和 arm 架构（绝大多数安卓 15 设备所需）
           make server-android-arm64
+
+      - name: Build Frida Server for Android (ARM)
+        run: |
+          cd frida
           make server-android-arm
 
-      - name: Package and Release
+      - name: Package Release Files
+        run: |
+          mkdir build_assets
+          # 压缩 arm64 版本
+          xz -z -f -k frida/build/frida-android-arm64/bin/frida-server
+          mv frida/build/frida-android-arm64/bin/frida-server.xz build_assets/hluda-server-${{ env.VERSION }}-android-arm64.xz
+          
+          # 压缩 arm 版本
+          xz -z -f -k frida/build/frida-android-arm/bin/frida-server
+          mv frida/build/frida-android-arm/bin/frida-server.xz build_assets/hluda-server-${{ env.VERSION }}-android-arm.xz
+
+      - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ env.VERSION }}-magic
-          name: Magic Frida Server ${{ env.VERSION }}
+          name: Magic Frida Server (Florida) ${{ env.VERSION }}
           files: |
-            frida/build/frida-android-arm64/bin/frida-server
-            frida/build/frida-android-arm/bin/frida-server
+            build_assets/hluda-server-${{ env.VERSION }}-android-arm64.xz
+            build_assets/hluda-server-${{ env.VERSION }}-android-arm.xz
