@@ -1,4 +1,4 @@
-name: Build Magic Frida 17.x (Fix Compile)
+name: Build Magic Frida 17.x (NDK r29 Android 15)
 
 on:
   workflow_dispatch:
@@ -38,7 +38,7 @@ jobs:
           git config --global user.name "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
 
-      # 4. 打入去特征补丁
+      # 4. 动态打入去特征补丁
       - name: Apply Anti-Detection Patches
         run: |
           cd frida
@@ -67,22 +67,27 @@ jobs:
           sudo apt-get install -y build-essential libtool autoconf automake autopoint pkg-config unzip python3-pip python3-setuptools jq git nodejs npm
           pip3 install meson ninja
 
-      # 6. 下载并配置 Android NDK r25c
-      - name: Setup Android NDK
+      # 6. 【核心修复】升级下载并配置谷歌官方 Android NDK r29
+      - name: Setup Android NDK r29
         run: |
-          echo "正在下载官方 Android NDK r25c..."
-          curl -LO https://dl.google.com/android/repository/android-ndk-r25c-linux.zip
-          unzip -q android-ndk-r25c-linux.zip
-          echo "ANDROID_NDK_ROOT=$GITHUB_WORKSPACE/android-ndk-r25c" >> $GITHUB_ENV
-          echo "$GITHUB_WORKSPACE/android-ndk-r25c" >> $GITHUB_PATH
+          echo "正在下载官方 Android NDK r29 (Android 15 强力支持)..."
+          curl -LO https://dl.google.com/android/repository/android-ndk-r29-linux.zip
+          unzip -q android-ndk-r29-linux.zip
+          
+          # 建立软链接，防止解压出来的带版本后缀路径不匹配
+          NDK_DIR=$(find $GITHUB_WORKSPACE -maxdepth 1 -type d -name "android-ndk-r29*" | head -n 1)
+          echo "NDK 实际解压目录: $NDK_DIR"
+          
+          # 设置全局环境变量供 Frida 构建链抓取
+          echo "ANDROID_NDK_ROOT=$NDK_DIR" >> $GITHUB_ENV
+          echo "$NDK_DIR" >> $GITHUB_PATH
 
-      # 7. 【重头戏】改用 17.x 的 ./configure 体系进行全架构强力编译
+      # 7. 循环构建四大架构
       - name: Real Build 17.x Android Archs
         run: |
           cd frida
-          export ANDROID_NDK_ROOT=$GITHUB_WORKSPACE/android-ndk-r25c
+          export ANDROID_NDK_ROOT=${{ env.ANDROID_NDK_ROOT }}
           
-          # 定义需要编译的架构
           ARCHS=("android-arm" "android-arm64" "android-x86" "android-x86_64")
           
           for ARCH in "${ARCHS[@]}"; do
@@ -90,13 +95,13 @@ jobs:
             echo "🔨 开始配置与编译架构: $ARCH"
             echo "======================================================="
             
-            # 清理之前的单次构建残留
+            # 清理单次构建缓存，Frida 17.x 强制每次清理
             git clean -xdf -e subprojects/ -e my-hluda/ 2>/dev/null || true
+            rm -rf build/ deps/
             
-            # 使用 17.x 标准的交叉配置命令进行引导
+            # 驱动 17.x 的高级交叉配置与核心 make
             if ./configure --host=$ARCH; then
-               echo "✅ $ARCH 配置成功，开始执行编译..."
-               # 强行编译核心组件
+               echo "✅ $ARCH 基础配置成功，开始编译..."
                if make core; then
                   echo "🎉 🎉 $ARCH 核心组件 make 成功！"
                else
@@ -107,19 +112,19 @@ jobs:
             fi
           done
 
-      # 8. 全盘暴力搜寻与高阶归档重命名
+      # 8. 全盘暴力搜寻与 17.x 高阶归档重命名
       - name: Search and Organize 17.x Artifacts
         run: |
           mkdir -p $GITHUB_WORKSPACE/output
           FRIDA_VER="${{ github.event.inputs.frida_version }}"
           
-          echo "===== 🔍 开始最终扫描整个 frida 目录生成的文件 ====="
+          echo "===== 🔍 开始全盘扫描整个 frida 目录生成的文件 ====="
           cd $GITHUB_WORKSPACE
           
           ARCH_MAPPINGS=("android-arm" "android-arm64" "android-x86" "android-x86_64")
           
           for ARCH in "${ARCH_MAPPINGS[@]}"; do
-            # 17.x 模糊匹配搜索
+            # 17.x 深度级模糊匹配搜索，支持跨级平级文件夹
             SERVER_BIN=$(find frida/ -type f \( -name "frida-server" -o -name "frida-server.exe" \) | grep -i "$ARCH" | head -n 1)
             
             if [ -n "$SERVER_BIN" ] && [ -f "$SERVER_BIN" ]; then
