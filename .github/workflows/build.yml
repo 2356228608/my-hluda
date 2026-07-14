@@ -59,14 +59,14 @@ jobs:
             fi
           fi
 
-      # 5. 安装 Linux 编译基础依赖和 Python 环境
+      # 5. 【已修复】清理掉找不到的旧包 iconv 和 toolchain-prefix
       - name: Install Build Dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y build-essential iconv toolchain-prefix binfmt-support libtool autoconf automake autopoint gettext pkg-config unzip
+          sudo apt-get install -y build-essential binfmt-support libtool autoconf automake autopoint gettext pkg-config unzip
           pip3 install meson ninja
 
-      # 6. 【修复核心】使用官方系统自带的 NDK 或直接由脚本快速下载 r25c
+      # 6. 使用官方系统自带的 NDK 或直接由脚本快速下载 r25c
       - name: Setup Android NDK
         run: |
           echo "正在下载官方 Android NDK r25c..."
@@ -82,7 +82,6 @@ jobs:
       - name: Build Frida Server
         run: |
           cd frida
-          # 将刚才下载的 NDK 路径明确传给 Makefile
           export ANDROID_NDK_ROOT=$GITHUB_WORKSPACE/android-ndk-r25c
           make android-arm64
 
