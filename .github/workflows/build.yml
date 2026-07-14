@@ -73,25 +73,56 @@ jobs:
           curl -LO https://dl.google.com/android/repository/android-ndk-r25c-linux.zip
           unzip -q android-ndk-r25c-linux.zip
           
-          # 设置全局环境变量，让随后的编译工具链能无缝找到 NDK
+          # 设置全局环境变量
           echo "ANDROID_NDK_ROOT=$GITHUB_WORKSPACE/android-ndk-r25c" >> $GITHUB_ENV
           echo "$GITHUB_WORKSPACE/android-ndk-r25c" >> $GITHUB_PATH
 
-      # 7. 【核心修复】使用 16.x Makefile 正确的目标名编译
-      - name: Build Frida Server
+      # 7. 【深度调试与多策略编译】
+      - name: Diagnostics and Build Frida Server
         run: |
           cd frida
           export ANDROID_NDK_ROOT=$GITHUB_WORKSPACE/android-ndk-r25c
           
-          # 16.x 标准 Makefile 目标是 server-android-arm64
-          make server-android-arm64
+          echo "========================================="
+          echo "🔍 诊断阶段 1: 查看根目录 Makefile 的真实内容"
+          echo "========================================="
+          cat Makefile
+          
+          echo "========================================="
+          echo "🔍 诊断阶段 2: 查看 releng 目录下的脚本分布"
+          echo "========================================="
+          ls -R releng/
+          
+          echo "========================================="
+          echo "🚀 尝试策略 A: 直接调用 releng/meson.py 检查可用目标"
+          echo "========================================="
+          if [ -f "releng/meson.py" ]; then
+             python3 releng/meson.py --help || echo "meson.py help failed"
+          fi
+
+          echo "========================================="
+          echo "🚀 尝试策略 B: 开始执行交叉编译"
+          echo "========================================="
+          
+          # 策略 B1: 尝试利用 releng/meson.py 直接对 android-arm64 进行配置和编译
+          if [ -f "releng/meson.py" ]; then
+             echo "检测到 releng/meson.py，尝试使用 meson 直接编译..."
+             python3 releng/meson.py compile -C build android-arm64 && exit 0
+          fi
+          
+          # 策略 B2: 尝试新版 Frida 常见的 make 规则名
+          echo "尝试 make android-arm64-server ..."
+          make android-arm64-server && exit 0 || echo "B2 失败，继续下一次尝试"
+          
+          # 策略 B3: 如果都失败了，强制输出当前的全部 make 目标，并故意中断让我们看日志
+          echo "❌ 策略全部尝试完毕，无法自动识别编译目标。以下是 config.mk 的内容以供分析："
+          cat config.mk || true
+          exit 1
 
       # 8. 收集并整理编译出来的可用文件
       - name: Organize Artifacts
         run: |
           mkdir -p $GITHUB_WORKSPACE/output
-          
-          # 在编译输出目录中寻找生成的 frida-server
           SERVER_BIN=$(find frida/build/ -type f -name "frida-server" | head -n 1)
           if [ -f "$SERVER_BIN" ]; then
             cp "$SERVER_BIN" $GITHUB_WORKSPACE/output/hluda-server-android-arm64
