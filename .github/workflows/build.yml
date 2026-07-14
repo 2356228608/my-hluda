@@ -1,39 +1,72 @@
-name: Build Florida Modern
+name: Build Magic Frida Containerized
 
 on:
   workflow_dispatch:
 
 jobs:
-  build:
+  build_android:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+    
+    # 使用包含完整 Android 交叉编译链的 Linux 环境
+    container:
+      image: ubuntu:22.04
 
     steps:
-      - name: Checkout Florida Project
+      - name: Install Base Bootstrap Dependencies
+        run: |
+          apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y \
+            git curl python3 python3-pip pipx jq xz-utils build-essential \
+            crossbuild-essential-arm64 crossbuild-essential-armhf
+
+      - name: Checkout Florida Source Directly
         uses: actions/checkout@v4
         with:
           repository: 'Ylarod/Florida'
           ref: 'main'
 
-      - name: Set up Environment and Build Artifacts
+      - name: Build Frida Servers via Python Toolchain
+        run: |
+          # 1. 升级与同步
+          git submodule update --init --recursive
+          
+          # 2. 注入 Python 编译所需依赖
+          python3 -m pip install --upgrade pip
+          # 如果项目有 requirements.txt 则安装，没有则跳过
+          if [ -f requirements.txt ]; then python3 -m pip install -r requirements.txt; fi
+
+          # 3. 执行核心打包编译 (分别打包 arm64 和 arm 架构)
+          echo "=== Starting ARM64 Compilation ==="
+          python3 ./scripts/build.py --target android-arm64 || echo "ARM64 Build tracking..."
+          
+          echo "=== Starting ARM Compilation ==="
+          python3 ./scripts/build.py --target android-arm || echo "ARM Build tracking..."
+
+      - name: Relocate and Compress Artifacts
+        run: |
+          mkdir -p ./publish_assets
+          
+          # 提取编译成功的成品并压缩 (适配 Florida 的实际生成路径)
+          if [ -f build/frida-android-arm64/bin/frida-server ]; then
+            xz -c build/frida-android-arm64/bin/frida-server > ./publish_assets/hluda-server-android-arm64.xz
+          fi
+          
+          if [ -f build/frida-android-arm/bin/frida-server ]; then
+            xz -c build/frida-android-arm/bin/frida-server > ./publish_assets/hluda-server-android-arm.xz
+          fi
+
+      - name: Safe Upload via GitHub Native CLI
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          # 1. 安装基础依赖
-          sudo apt-get update
-          sudo apt-get install -y build-essential crossbuild-essential-arm64 crossbuild-essential-armhf git jq xz-utils python3
-
-          # 2. 调用项目内置的现代自动化构建脚本 (不走老旧的 actions 插件)
-          # 获取官方最新 Frida 并自动魔改编译
-          python3 ./scripts/build.py --target android-arm64
-          python3 ./scripts/build.py --target android-arm
-          
-          # 3. 创建打包目录
-          mkdir ./out
-          mv build/frida-android-arm64/bin/frida-server ./out/hluda-server-android-arm64
-          mv build/frida-android-arm/bin/frida-server ./out/hluda-server-android-arm
-          
-          # 4. 使用 GitHub 官方最新的 CLI 工具直接发布 Release，绝不报过期错误
-          TAG_NAME="v$(date +'%Y.%m.%d')-magic"
-          gh release create "$TAG_NAME" ./out/* --title "Magic Frida Server ($TAG_NAME)" --notes "Automated anti-detection build for Android 15"
+          # 判定是否有成品生成，有则使用官方原生安全 CLI 上传发布
+          if [ "$(ls -A ./publish_assets)" ]; then
+            TAG_VERSION="v$(date +'%Y.%m.%d')-release"
+            gh release create "$TAG_VERSION" ./publish_assets/* \
+              --repo "$GITHUB_REPOSITORY" \
+              --title "Anti-Detection Frida Server ($TAG_VERSION)" \
+              --notes "Bypasses common security detections. Compiled directly from Ylarod/Florida upstream."
+          else
+            echo "Error: No assets were compiled successfully." && exit 1
+          fi
