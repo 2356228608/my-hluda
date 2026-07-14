@@ -67,22 +67,20 @@ jobs:
           sudo apt-get install -y build-essential libtool autoconf automake autopoint pkg-config unzip python3-pip python3-setuptools jq git nodejs npm
           pip3 install meson ninja
 
-      # 6. 【核心修复】升级下载并配置谷歌官方 Android NDK r29
+      # 6. 下载并配置谷歌官方 Android NDK r29
       - name: Setup Android NDK r29
         run: |
           echo "正在下载官方 Android NDK r29 (Android 15 强力支持)..."
           curl -LO https://dl.google.com/android/repository/android-ndk-r29-linux.zip
           unzip -q android-ndk-r29-linux.zip
           
-          # 建立软链接，防止解压出来的带版本后缀路径不匹配
           NDK_DIR=$(find $GITHUB_WORKSPACE -maxdepth 1 -type d -name "android-ndk-r29*" | head -n 1)
           echo "NDK 实际解压目录: $NDK_DIR"
           
-          # 设置全局环境变量供 Frida 构建链抓取
           echo "ANDROID_NDK_ROOT=$NDK_DIR" >> $GITHUB_ENV
           echo "$NDK_DIR" >> $GITHUB_PATH
 
-      # 7. 循环构建四大架构
+      # 7. 【核心修复】使用 17.x 兼容的 make 编译目标
       - name: Real Build 17.x Android Archs
         run: |
           cd frida
@@ -95,18 +93,27 @@ jobs:
             echo "🔨 开始配置与编译架构: $ARCH"
             echo "======================================================="
             
-            # 清理单次构建缓存，Frida 17.x 强制每次清理
+            # 清理单次构建缓存
             git clean -xdf -e subprojects/ -e my-hluda/ 2>/dev/null || true
             rm -rf build/ deps/
             
-            # 驱动 17.x 的高级交叉配置与核心 make
+            # 引导交叉配置
             if ./configure --host=$ARCH; then
                echo "✅ $ARCH 基础配置成功，开始编译..."
-               if make core; then
-                  echo "🎉 🎉 $ARCH 核心组件 make 成功！"
-               else
-                  echo "❌ $ARCH make 阶段失败"
+               
+               # 策略 1: 尝试 17.x 更标准的 make server 命令来单独编译 frida-server 
+               if make server; then
+                  echo "🎉 🎉 $ARCH frida-server 编译成功！(策略 1)"
+                  continue
                fi
+               
+               # 策略 2: 尝试直接运行无特定 target 的 make，编译默认目标
+               if make; then
+                  echo "🎉 🎉 $ARCH 默认目标编译成功！(策略 2)"
+                  continue
+               fi
+               
+               echo "❌ $ARCH make 阶段失败"
             else
                echo "❌ $ARCH configure 引导阶段失败"
             fi
