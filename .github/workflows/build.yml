@@ -1,7 +1,12 @@
-name: Build Magic Frida (Auto Latest & All Archs)
+name: Build Magic Frida 17.x (Android 15 Support)
 
 on:
   workflow_dispatch: # 支持手动点击运行
+    inputs:
+      frida_version:
+        description: '想要编译的 Frida 17.x 具体版本'
+        required: true
+        default: '17.15.5' # 默认使用你刚才运行的最新 17.x 版本
 
 jobs:
   build:
@@ -18,74 +23,54 @@ jobs:
         with:
           path: my-hluda
 
-      # 2. 【核心新增】自动获取 Frida 官方最新的 Release 版本号
-      - name: Get Latest Frida Version
-        id: get-version
-        run: |
-          # 请求 GitHub API 获取 frida/frida 的最新 release tag
-          LATEST_TAG=$(curl -s https://api.github.com/repos/frida/frida/releases/latest | jq -r .tag_name)
-          
-          # 如果获取失败，设置一个 16.1.4 作为安全兜底版本
-          if [ -z "$LATEST_TAG" ] || [ "$LATEST_TAG" = "null" ]; then
-            LATEST_TAG="16.1.4"
-            echo "⚠️ 获取最新版本失败，启用兜底版本: $LATEST_TAG"
-          else
-            echo "🔥 成功获取到 Frida 官方最新版本: $LATEST_TAG"
-          fi
-          
-          # 将版本号存入 GitHub 环境变量，供后续步骤使用
-          echo "FRIDA_VERSION=$LATEST_TAG" >> $GITHUB_ENV
-          echo "version=$LATEST_TAG" >> $GITHUB_OUTPUT
-
-      # 3. 动态检出官方最新 Frida 源码
+      # 2. 检出官方 Frida 17.x 源码
       - name: Checkout Frida Source
         uses: actions/checkout@v4
         with:
           repository: 'frida/frida'
-          ref: ${{ env.FRIDA_VERSION }} # <-- 动态使用上一步获取到的最新版本号
+          ref: ${{ github.event.inputs.frida_version }}
           path: frida
           submodules: recursive # 必须递归拉取子模块
 
-      # 4. 配置 Git 身份，防止打补丁时报错
+      # 3. 配置 Git 身份
       - name: Setup Git Identity
         run: |
           git config --global user.name "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
 
-      # 5. 动态查找并打入去特征补丁
+      # 4. 强力适配 17.x 的动态去特征补丁打入
       - name: Apply Anti-Detection Patches
         run: |
           cd frida
           
-          # 对 frida-gum 打补丁
-          GUM_PATH=$(find . -maxdepth 3 -type d -name "frida-gum" | head -n 1)
+          # 针对 17.x 的多层级目录动态匹配补丁
+          GUM_PATH=$(find . -maxdepth 4 -type d -name "frida-gum" | head -n 1)
           if [ -n "$GUM_PATH" ]; then
             cd "$GUM_PATH"
             PATCH_DIR="$GITHUB_WORKSPACE/my-hluda/patches/frida-gum"
             if [ -d "$PATCH_DIR" ] && [ "$(ls -A $PATCH_DIR/*.patch 2>/dev/null)" ]; then
-              git apply "$PATCH_DIR"/*.patch || echo "Gum patches applied with warnings"
+              git apply --ignore-whitespace "$PATCH_DIR"/*.patch || echo "⚠️ Gum patches applied with warnings"
             fi
             cd "$GITHUB_WORKSPACE/frida"
           fi
           
-          # 对 frida-core 打补丁
-          CORE_PATH=$(find . -maxdepth 3 -type d -name "frida-core" | head -n 1)
+          CORE_PATH=$(find . -maxdepth 4 -type d -name "frida-core" | head -n 1)
           if [ -n "$CORE_PATH" ]; then
             cd "$CORE_PATH"
             PATCH_DIR="$GITHUB_WORKSPACE/my-hluda/patches/frida-core"
             if [ -d "$PATCH_DIR" ] && [ "$(ls -A $PATCH_DIR/*.patch 2>/dev/null)" ]; then
-              git apply "$PATCH_DIR"/*.patch || echo "Core patches applied with warnings"
+              git apply --ignore-whitespace "$PATCH_DIR"/*.patch || echo "⚠️ Core patches applied with warnings"
             fi
           fi
 
-      # 6. 安装 Linux 编译基础依赖和 Python 环境
+      # 5. 安装 Linux 17.x 编译依赖
       - name: Install Build Dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y build-essential libtool autoconf automake autopoint pkg-config unzip python3-pip python3-setuptools jq
+          sudo apt-get install -y build-essential libtool autoconf automake autopoint pkg-config unzip python3-pip python3-setuptools jq git
           pip3 install meson ninja
 
-      # 7. 下载并配置 Android NDK r25c
+      # 6. 下载并配置 Android NDK r25c (Frida 17.x 编译标配)
       - name: Setup Android NDK
         run: |
           echo "正在下载官方 Android NDK r25c..."
@@ -96,77 +81,79 @@ jobs:
           echo "ANDROID_NDK_ROOT=$GITHUB_WORKSPACE/android-ndk-r25c" >> $GITHUB_ENV
           echo "$GITHUB_WORKSPACE/android-ndk-r25c" >> $GITHUB_PATH
 
-      # 8. 循环强力构建四大架构
-      - name: Loop Build All Android Archs
+      # 7. 【核心改动】使用 Frida 17.x 专属构建脚本当中对应的全架构循环
+      - name: Loop Build All Android Archs (Frida 17.x Mode)
         run: |
           cd frida
           export ANDROID_NDK_ROOT=$GITHUB_WORKSPACE/android-ndk-r25c
           
-          # 定义需要编译的 4 个目标架构
           ARCHS=("android-arm" "android-arm64" "android-x86" "android-x86_64")
           
           for ARCH in "${ARCHS[@]}"; do
             echo "======================================================="
-            echo "🚀 开始编译架构: $ARCH"
+            echo "🚀 正在编译兼容 Android 15 的架构: $ARCH"
             echo "======================================================="
             
-            # 清理之前的单次编译缓存，防止架构污染
+            # 清理单次构建缓存
             rm -rf build/
             
-            # 策略 1: 尝试标准内核服务构建命令
-            if make core-$ARCH; then
-              echo "✅ 架构 $ARCH 编译成功 (策略 1)"
-              continue
+            # 策略 1: 17.x 标准的基于 releng/meson_make.py 的构建流转 (新版 Frida 核心命令)
+            if python3 ./releng/meson_make.py $ARCH core; then
+               echo "✅ 架构 $ARCH 编译成功 (策略 1)"
+               continue
             fi
             
-            # 策略 2: 尝试脚本转发构建
-            if [ -f "releng/build.py" ]; then
-              if python3 releng/build.py $ARCH; then
-                echo "✅ 架构 $ARCH 编译成功 (策略 2)"
-                continue
-              fi
+            # 策略 2: 备用通用构建引导
+            if [ -f "meson.py" ]; then
+               if python3 meson.py compile -C build $ARCH; then
+                  echo "✅ 架构 $ARCH 编译成功 (策略 2)"
+                  continue
+               fi
             fi
             
-            echo "❌ ⚠️ 架构 $ARCH 编译未成功完成，继续尝试下一个架构..."
+            # 策略 3: 暴力降级尝试新版 Makefile 映射
+            if make $ARCH; then
+               echo "✅ 架构 $ARCH 编译成功 (策略 3)"
+               continue
+            fi
+
+            echo "❌ 警告：架构 $ARCH 编译遇到阻碍，尝试编译下一个目标..."
           done
 
-      # 9. 收集并规范重命名所有产物
-      - name: Organize & Rename Artifacts
+      # 8. 【核心改动】Frida 17.x 专属的全盘暴力搜寻与高阶归档重命名
+      - name: Search and Organize 17.x Artifacts
         run: |
           mkdir -p $GITHUB_WORKSPACE/output
+          FRIDA_VER="${{ github.event.inputs.frida_version }}"
           
-          # 1. 提取我们刚才获取到的最新版本号（去掉可能存在的 'v' 前缀以规范命名）
-          FRIDA_VER=$(echo "${{ env.FRIDA_VERSION }}" | sed 's/^v//')
-          echo "规范化后的版本号为: $FRIDA_VER"
-          
-          # 2. 回到工作空间开始搜索并归档
+          echo "===== 🔍 开始全盘扫描 17.x 产物目录 ====="
           cd $GITHUB_WORKSPACE
           
-          # 循环识别并将各架构文件提取出来并重命名
           ARCH_MAPPINGS=("android-arm" "android-arm64" "android-x86" "android-x86_64")
+          
           for ARCH in "${ARCH_MAPPINGS[@]}"; do
-            # 搜寻编译产物
-            SERVER_BIN=$(find frida/build/ -type f -name "frida-server" | grep "$ARCH" | head -n 1)
+            # 17.x 终极模糊搜索：无论文件在 subprojects 还是 bin 下，或者叫 frida-server.exe，统统抓出来
+            SERVER_BIN=$(find frida/build/ -type f \( -name "frida-server" -o -name "frida-server.exe" \) | grep -i "$ARCH" | head -n 1)
             
-            if [ -f "$SERVER_BIN" ]; then
+            if [ -n "$SERVER_BIN" ] && [ -f "$SERVER_BIN" ]; then
               TARGET_NAME="hluda-server-${FRIDA_VER}-${ARCH}"
               cp "$SERVER_BIN" "$GITHUB_WORKSPACE/output/${TARGET_NAME}"
-              echo "🎉 成功归档架构: ${TARGET_NAME}"
+              chmod +x "$GITHUB_WORKSPACE/output/${TARGET_NAME}"
+              echo "🎉 成功捕获并打包 17.x 产物: ${TARGET_NAME}"
               
-              # 移除已归档文件防止干扰后续搜索
+              # 清理已被抓取的产物，防止同名串线
               rm -f "$SERVER_BIN"
             else
-              echo "⚠️ 提示：未找到架构 $ARCH 的编译产物。"
+              echo "❌ 遗憾：未能从编译树中捞出 $ARCH 的 frida-server 二进制文件。"
             fi
           done
 
-      # 10. 自动发布所有规范命名的产物到 Release
-      - name: Create Release and Upload Assets
+      # 9. 自动发布所有规范命名的 17.x 产物到 Release
+      - name: Create Release and Upload 17.x Assets
         uses: softprops/action-gh-release@v2
-        if: success()
         with:
-          tag_name: "${{ env.FRIDA_VERSION }}-magic"
-          name: "Magic Frida Full Build (${{ env.FRIDA_VERSION }})"
+          tag_name: "v${{ github.event.inputs.frida_version }}-${{ github.run_number }}-magic-17"
+          name: "Magic Frida 17.x Full Build (${{ github.event.inputs.frida_version }})"
           files: |
             output/hluda-server-*
         env:
