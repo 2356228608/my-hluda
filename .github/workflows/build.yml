@@ -35,17 +35,50 @@ jobs:
           git config --global user.name "github-actions[bot]"
           git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
-      # 4. 核心魔改步骤：把你在 my-hluda/patches 下的防检测补丁，打入官方的 frida 源码中
+      # 4. 核心魔改步骤：动态查找 frida-gum 和 frida-core 并打入补丁
+      # 无论官方把这两个文件夹放在根目录还是 subprojects 下，都能自动找到
       - name: Apply Anti-Detection Patches
         run: |
-          cd frida/subprojects/frida-gum
-          if [ -d "../../my-hluda/patches/frida-gum" ]; then
-            git apply ../../my-hluda/patches/frida-gum/*.patch || echo "Some gum patches skipped"
-          fi
+          # 确保进入了克隆的 frida 源码目录
+          cd frida
+          echo "==== 当前 Frida 目录结构简览 ===="
+          ls -F
           
-          cd ../frida-core
-          if [ -d "../../my-hluda/patches/frida-core" ]; then
-            git apply ../../my-hluda/patches/frida-core/*.patch || echo "Some core patches skipped"
+          # ---- 1. 寻找并对 frida-gum 打补丁 ----
+          GUM_PATH=$(find . -maxdepth 3 -type d -name "frida-gum" | head -n 1)
+          if [ -n "$GUM_PATH" ]; then
+            echo "找到 frida-gum 路径: $GUM_PATH"
+            cd "$GUM_PATH"
+            # 这里的补丁路径要根据实际克隆结构寻找，使用绝对路径更安全
+            PATCH_DIR="$GITHUB_WORKSPACE/my-hluda/patches/frida-gum"
+            if [ -d "$PATCH_DIR" ] && [ "$(ls -A $PATCH_DIR/*.patch 2>/dev/null)" ]; then
+              echo "正在应用 frida-gum 补丁..."
+              git apply "$PATCH_DIR"/*.patch || echo "部分 gum 补丁被跳过或已应用"
+            else
+              echo "未在 $PATCH_DIR 发现补丁文件"
+            fi
+            cd "$GITHUB_WORKSPACE/frida" # 切回 frida 根目录
+          else
+            echo "❌ 错误：未能在源码中找到 frida-gum 文件夹！"
+            exit 1
+          fi
+
+          # ---- 2. 寻找并对 frida-core 打补丁 ----
+          CORE_PATH=$(find . -maxdepth 3 -type d -name "frida-core" | head -n 1)
+          if [ -n "$CORE_PATH" ]; then
+            echo "找到 frida-core 路径: $CORE_PATH"
+            cd "$CORE_PATH"
+            PATCH_DIR="$GITHUB_WORKSPACE/my-hluda/patches/frida-core"
+            if [ -d "$PATCH_DIR" ] && [ "$(ls -A $PATCH_DIR/*.patch 2>/dev/null)" ]; then
+              echo "正在应用 frida-core 补丁..."
+              git apply "$PATCH_DIR"/*.patch || echo "部分 core 补丁被跳过或已应用"
+            else
+              echo "未在 $PATCH_DIR 发现补丁文件"
+            fi
+            cd "$GITHUB_WORKSPACE"
+          else
+            echo "❌ 错误：未能在源码中找到 frida-core 文件夹！"
+            exit 1
           fi
 
       # 5. 设置编译所需的依赖环境（以 Android 编译为例，需要 Python 和 NDK）
