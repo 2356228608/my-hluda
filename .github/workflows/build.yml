@@ -1,4 +1,4 @@
-name: Build Magic Frida
+name: Build Magic Frida (Auto Latest & All Archs)
 
 on:
   workflow_dispatch: # 支持手动点击运行
@@ -18,22 +18,41 @@ jobs:
         with:
           path: my-hluda
 
-      # 2. 检出官方 Frida 源码（使用 16.1.4 稳定版）
+      # 2. 【核心新增】自动获取 Frida 官方最新的 Release 版本号
+      - name: Get Latest Frida Version
+        id: get-version
+        run: |
+          # 请求 GitHub API 获取 frida/frida 的最新 release tag
+          LATEST_TAG=$(curl -s https://api.github.com/repos/frida/frida/releases/latest | jq -r .tag_name)
+          
+          # 如果获取失败，设置一个 16.1.4 作为安全兜底版本
+          if [ -z "$LATEST_TAG" ] || [ "$LATEST_TAG" = "null" ]; then
+            LATEST_TAG="16.1.4"
+            echo "⚠️ 获取最新版本失败，启用兜底版本: $LATEST_TAG"
+          else
+            echo "🔥 成功获取到 Frida 官方最新版本: $LATEST_TAG"
+          fi
+          
+          # 将版本号存入 GitHub 环境变量，供后续步骤使用
+          echo "FRIDA_VERSION=$LATEST_TAG" >> $GITHUB_ENV
+          echo "version=$LATEST_TAG" >> $GITHUB_OUTPUT
+
+      # 3. 动态检出官方最新 Frida 源码
       - name: Checkout Frida Source
         uses: actions/checkout@v4
         with:
           repository: 'frida/frida'
-          ref: '16.1.4'
+          ref: ${{ env.FRIDA_VERSION }} # <-- 动态使用上一步获取到的最新版本号
           path: frida
           submodules: recursive # 必须递归拉取子模块
 
-      # 3. 配置 Git 身份，防止打补丁时报错
+      # 4. 配置 Git 身份，防止打补丁时报错
       - name: Setup Git Identity
         run: |
           git config --global user.name "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
 
-      # 4. 动态查找并打入去特征补丁
+      # 5. 动态查找并打入去特征补丁
       - name: Apply Anti-Detection Patches
         run: |
           cd frida
@@ -59,69 +78,96 @@ jobs:
             fi
           fi
 
-      # 5. 安装 Linux 编译基础依赖和 Python 环境
+      # 6. 安装 Linux 编译基础依赖和 Python 环境
       - name: Install Build Dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y build-essential libtool autoconf automake autopoint pkg-config unzip python3-pip python3-setuptools
+          sudo apt-get install -y build-essential libtool autoconf automake autopoint pkg-config unzip python3-pip python3-setuptools jq
           pip3 install meson ninja
 
-      # 6. 下载并配置 Android NDK r25c
+      # 7. 下载并配置 Android NDK r25c
       - name: Setup Android NDK
         run: |
           echo "正在下载官方 Android NDK r25c..."
           curl -LO https://dl.google.com/android/repository/android-ndk-r25c-linux.zip
           unzip -q android-ndk-r25c-linux.zip
           
-          # 设置全局环境变量，让随后的编译工具链能无缝找到 NDK
+          # 设置全局环境变量
           echo "ANDROID_NDK_ROOT=$GITHUB_WORKSPACE/android-ndk-r25c" >> $GITHUB_ENV
           echo "$GITHUB_WORKSPACE/android-ndk-r25c" >> $GITHUB_PATH
 
-      # 7. 【终极强力构建】利用多策略链条，必须把 android-arm64 逼出来
-      - name: Force Build Frida Server
+      # 8. 循环强力构建四大架构
+      - name: Loop Build All Android Archs
         run: |
           cd frida
           export ANDROID_NDK_ROOT=$GITHUB_WORKSPACE/android-ndk-r25c
           
-          echo "🚀 [策略 1] 尝试 Frida 16.x 核心服务编译命令: make core-android-arm64"
-          make core-android-arm64 && exit 0 || echo "策略 1 失败，切入备份策略..."
+          # 定义需要编译的 4 个目标架构
+          ARCHS=("android-arm" "android-arm64" "android-x86" "android-x86_64")
           
-          echo "🚀 [策略 2] 尝试使用 python 转发脚本直接构建架构"
-          if [ -f "releng/build.py" ]; then
-            python3 releng/build.py android-arm64 && exit 0
-          elif [ -f "meson.py" ]; then
-            python3 meson.py compile -C build android-arm64 && exit 0
-          fi
-          
-          echo "🚀 [策略 3] 兜底暴力破解: 直接调用 Makefile 构建所有 android 架构"
-          make android && exit 0 || echo "暴力破解失败"
-          
-          echo "❌ 所有策略全军覆没，强制中断检查原因"
-          exit 1
+          for ARCH in "${ARCHS[@]}"; do
+            echo "======================================================="
+            echo "🚀 开始编译架构: $ARCH"
+            echo "======================================================="
+            
+            # 清理之前的单次编译缓存，防止架构污染
+            rm -rf build/
+            
+            # 策略 1: 尝试标准内核服务构建命令
+            if make core-$ARCH; then
+              echo "✅ 架构 $ARCH 编译成功 (策略 1)"
+              continue
+            fi
+            
+            # 策略 2: 尝试脚本转发构建
+            if [ -f "releng/build.py" ]; then
+              if python3 releng/build.py $ARCH; then
+                echo "✅ 架构 $ARCH 编译成功 (策略 2)"
+                continue
+              fi
+            fi
+            
+            echo "❌ ⚠️ 架构 $ARCH 编译未成功完成，继续尝试下一个架构..."
+          done
 
-      # 8. 收集并整理编译出来的可用文件
-      - name: Organize Artifacts
+      # 9. 收集并规范重命名所有产物
+      - name: Organize & Rename Artifacts
         run: |
           mkdir -p $GITHUB_WORKSPACE/output
           
-          # 16.x 交叉编译的产物极大可能深埋在 build/ 文件夹里，我们全盘搜索名为 frida-server 的二进制执行文件
-          SERVER_BIN=$(find frida/build/ -type f -name "frida-server" | head -n 1)
-          if [ -f "$SERVER_BIN" ]; then
-            cp "$SERVER_BIN" $GITHUB_WORKSPACE/output/hluda-server-android-arm64
-            echo "==== 🎉🎉🎉 成功找到并提取出编译好的二进制文件！ ===="
-          else
-            echo "❌ 错误：编译虽结束，但未能在输出路径中找到 frida-server 产物文件！"
-            exit 1
-          fi
+          # 1. 提取我们刚才获取到的最新版本号（去掉可能存在的 'v' 前缀以规范命名）
+          FRIDA_VER=$(echo "${{ env.FRIDA_VERSION }}" | sed 's/^v//')
+          echo "规范化后的版本号为: $FRIDA_VER"
+          
+          # 2. 回到工作空间开始搜索并归档
+          cd $GITHUB_WORKSPACE
+          
+          # 循环识别并将各架构文件提取出来并重命名
+          ARCH_MAPPINGS=("android-arm" "android-arm64" "android-x86" "android-x86_64")
+          for ARCH in "${ARCH_MAPPINGS[@]}"; do
+            # 搜寻编译产物
+            SERVER_BIN=$(find frida/build/ -type f -name "frida-server" | grep "$ARCH" | head -n 1)
+            
+            if [ -f "$SERVER_BIN" ]; then
+              TARGET_NAME="hluda-server-${FRIDA_VER}-${ARCH}"
+              cp "$SERVER_BIN" "$GITHUB_WORKSPACE/output/${TARGET_NAME}"
+              echo "🎉 成功归档架构: ${TARGET_NAME}"
+              
+              # 移除已归档文件防止干扰后续搜索
+              rm -f "$SERVER_BIN"
+            else
+              echo "⚠️ 提示：未找到架构 $ARCH 的编译产物。"
+            fi
+          done
 
-      # 9. 自动发布产物到 Release
-      - name: Create Release and Upload Asset
+      # 10. 自动发布所有规范命名的产物到 Release
+      - name: Create Release and Upload Assets
         uses: softprops/action-gh-release@v2
         if: success()
         with:
-          tag_name: "v${{ github.run_number }}-magic"
-          name: "Magic Frida Build #${{ github.run_number }}"
+          tag_name: "${{ env.FRIDA_VERSION }}-magic"
+          name: "Magic Frida Full Build (${{ env.FRIDA_VERSION }})"
           files: |
-            output/hluda-server-android-arm64
+            output/hluda-server-*
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
