@@ -80,9 +80,12 @@ jobs:
           echo "ANDROID_NDK_ROOT=$NDK_DIR" >> $GITHUB_ENV
           echo "$NDK_DIR" >> $GITHUB_PATH
 
-      # 7. 【核心修复】使用 17.x 兼容的 make 编译目标
-      - name: Real Build 17.x Android Archs
+      # 7. 【核心史诗级修复】编译与即时收割产物一体化
+      - name: Real Build & Immediately Harvest 17.x
         run: |
+          mkdir -p $GITHUB_WORKSPACE/output
+          FRIDA_VER="${{ github.event.inputs.frida_version }}"
+          
           cd frida
           export ANDROID_NDK_ROOT=${{ env.ANDROID_NDK_ROOT }}
           
@@ -101,15 +104,29 @@ jobs:
             if ./configure --host=$ARCH; then
                echo "✅ $ARCH 基础配置成功，开始编译..."
                
-               # 策略 1: 尝试 17.x 更标准的 make server 命令来单独编译 frida-server 
-               if make server; then
-                  echo "🎉 🎉 $ARCH frida-server 编译成功！(策略 1)"
-                  continue
-               fi
-               
-               # 策略 2: 尝试直接运行无特定 target 的 make，编译默认目标
+               # 触发 17.x 验证成功的全面 make 默认目标
                if make; then
-                  echo "🎉 🎉 $ARCH 默认目标编译成功！(策略 2)"
+                  echo "🎉 🎉 $ARCH 默认目标编译成功！正在即时捞取产物..."
+                  
+                  # 暴力在当前 build 成果树中寻找 frida-server 实体（不依赖路径中的架构名过滤）
+                  SERVER_BIN=$(find build/ -type f \( -name "frida-server" -o -name "frida-server.exe" \) | head -n 1)
+                  
+                  if [ -n "$SERVER_BIN" ] && [ -f "$SERVER_BIN" ]; then
+                     TARGET_NAME="hluda-server-${FRIDA_VER}-${ARCH}"
+                     cp "$SERVER_BIN" "$GITHUB_WORKSPACE/output/${TARGET_NAME}"
+                     chmod +x "$GITHUB_WORKSPACE/output/${TARGET_NAME}"
+                     echo "🔥 [收割成功] 已成功锁定制胜文件并移至输出区: ${TARGET_NAME}"
+                  else
+                     echo "⚠️ 警告：虽然编译声称成功，但未能在 build/ 文件夹内寻获 frida-server 二进制实体。"
+                     # 扩大全盘搜索作为兜底
+                     SERVER_BIN_BACKUP=$(find . -type f \( -name "frida-server" -o -name "frida-server.exe" \) | grep -v "my-hluda" | head -n 1)
+                     if [ -n "$SERVER_BIN_BACKUP" ]; then
+                        TARGET_NAME="hluda-server-${FRIDA_VER}-${ARCH}"
+                        cp "$SERVER_BIN_BACKUP" "$GITHUB_WORKSPACE/output/${TARGET_NAME}"
+                        chmod +x "$GITHUB_WORKSPACE/output/${TARGET_NAME}"
+                        echo "🔥 [兜底收割成功] 从平级路径打捞成功: ${TARGET_NAME}"
+                     fi
+                  fi
                   continue
                fi
                
@@ -119,38 +136,18 @@ jobs:
             fi
           done
 
-      # 8. 全盘暴力搜寻与 17.x 高阶归档重命名
-      - name: Search and Organize 17.x Artifacts
+      # 8. 安全防御确认
+      - name: Verify Harvested Assets
         run: |
-          mkdir -p $GITHUB_WORKSPACE/output
-          FRIDA_VER="${{ github.event.inputs.frida_version }}"
-          
-          echo "===== 🔍 开始全盘扫描整个 frida 目录生成的文件 ====="
-          cd $GITHUB_WORKSPACE
-          
-          ARCH_MAPPINGS=("android-arm" "android-arm64" "android-x86" "android-x86_64")
-          
-          for ARCH in "${ARCH_MAPPINGS[@]}"; do
-            # 17.x 深度级模糊匹配搜索，支持跨级平级文件夹
-            SERVER_BIN=$(find frida/ -type f \( -name "frida-server" -o -name "frida-server.exe" \) | grep -i "$ARCH" | head -n 1)
-            
-            if [ -n "$SERVER_BIN" ] && [ -f "$SERVER_BIN" ]; then
-              TARGET_NAME="hluda-server-${FRIDA_VER}-${ARCH}"
-              cp "$SERVER_BIN" "$GITHUB_WORKSPACE/output/${TARGET_NAME}"
-              chmod +x "$GITHUB_WORKSPACE/output/${TARGET_NAME}"
-              echo "🎉 成功捕获并打包 17.x 产物: ${TARGET_NAME}"
-              rm -f "$SERVER_BIN"
-            else
-              echo "❌ 未能找到 $ARCH 的二进制编译文件。"
-            fi
-          done
+          echo "===== 📦 检查最终收割到的全部产物清单 ====="
+          ls -l $GITHUB_WORKSPACE/output/ || echo "输出区空无一物"
 
       # 9. 自动发布到 Release
       - name: Create Release and Upload 17.x Assets
         uses: softprops/action-gh-release@v2
         with:
           tag_name: "v${{ github.event.inputs.frida_version }}-${{ github.run_number }}-magic-17"
-          name: "Magic Frida 17.x Full Build (${{ github.event.inputs.frida_version }})"
+          name: "Magic Frida 17.x Full Build (${{ github.event.inputs.frida_version }}) #${{ github.run_number }}"
           files: |
             output/hluda-server-*
         env:
