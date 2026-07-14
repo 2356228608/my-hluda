@@ -1,4 +1,4 @@
-name: Build Magic Frida 17.x (Diagnostics Mode)
+name: Build Magic Frida 17.x (Fix Compile)
 
 on:
   workflow_dispatch:
@@ -17,13 +17,13 @@ jobs:
       actions: write
 
     steps:
-      # 1. 检出你自己的补丁仓库
+      # 1. 检出你的补丁仓库
       - name: Checkout custom patches
         uses: actions/checkout@v4
         with:
           path: my-hluda
 
-      # 2. 检出官方 Frida 源码
+      # 2. 检出官方 Frida 17.x 源码
       - name: Checkout Frida Source
         uses: actions/checkout@v4
         with:
@@ -38,7 +38,7 @@ jobs:
           git config --global user.name "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
 
-      # 4. 动态查找并打入去特征补丁
+      # 4. 打入去特征补丁
       - name: Apply Anti-Detection Patches
         run: |
           cd frida
@@ -60,11 +60,11 @@ jobs:
             fi
           fi
 
-      # 5. 安装 Linux 编译依赖
+      # 5. 安装 Linux 17.x 编译依赖
       - name: Install Build Dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y build-essential libtool autoconf automake autopoint pkg-config unzip python3-pip python3-setuptools jq git
+          sudo apt-get install -y build-essential libtool autoconf automake autopoint pkg-config unzip python3-pip python3-setuptools jq git nodejs npm
           pip3 install meson ninja
 
       # 6. 下载并配置 Android NDK r25c
@@ -76,46 +76,70 @@ jobs:
           echo "ANDROID_NDK_ROOT=$GITHUB_WORKSPACE/android-ndk-r25c" >> $GITHUB_ENV
           echo "$GITHUB_WORKSPACE/android-ndk-r25c" >> $GITHUB_PATH
 
-      # 7. 循环构建四大架构 (带实时编译错误追踪)
-      - name: Loop Build All Android Archs
+      # 7. 【重头戏】改用 17.x 的 ./configure 体系进行全架构强力编译
+      - name: Real Build 17.x Android Archs
         run: |
           cd frida
           export ANDROID_NDK_ROOT=$GITHUB_WORKSPACE/android-ndk-r25c
           
-          # 先单独攻坚我们最需要的 android-arm64 作为主力测试
+          # 定义需要编译的架构
           ARCHS=("android-arm" "android-arm64" "android-x86" "android-x86_64")
           
           for ARCH in "${ARCHS[@]}"; do
             echo "======================================================="
-            echo "🚀 正在编译架构: $ARCH"
+            echo "🔨 开始配置与编译架构: $ARCH"
             echo "======================================================="
             
-            # 尝试新版 Python 构建入口，并把错误彻底打印出来
-            python3 ./releng/meson_make.py $ARCH core || echo "❌ 策略 1 编译失败"
+            # 清理之前的单次构建残留
+            git clean -xdf -e subprojects/ -e my-hluda/ 2>/dev/null || true
+            
+            # 使用 17.x 标准的交叉配置命令进行引导
+            if ./configure --host=$ARCH; then
+               echo "✅ $ARCH 配置成功，开始执行编译..."
+               # 强行编译核心组件
+               if make core; then
+                  echo "🎉 🎉 $ARCH 核心组件 make 成功！"
+               else
+                  echo "❌ $ARCH make 阶段失败"
+               fi
+            else
+               echo "❌ $ARCH configure 引导阶段失败"
+            fi
           done
 
-      # 8. 【核心升级：大扫除式全盘路径诊断】
-      - name: Deep Diagnostics and File Mapping
+      # 8. 全盘暴力搜寻与高阶归档重命名
+      - name: Search and Organize 17.x Artifacts
         run: |
-          echo "======================================================="
-          echo "🔍 诊断开始：全盘检索当前工作目录下生成的所有文件夹"
-          echo "======================================================="
+          mkdir -p $GITHUB_WORKSPACE/output
+          FRIDA_VER="${{ github.event.inputs.frida_version }}"
+          
+          echo "===== 🔍 开始最终扫描整个 frida 目录生成的文件 ====="
           cd $GITHUB_WORKSPACE
           
-          echo "--- 1. 打印当前 workspace 下的第一层级目录结构 ---"
-          ls -F
+          ARCH_MAPPINGS=("android-arm" "android-arm64" "android-x86" "android-x86_64")
           
-          echo "--- 2. 打印 frida 源码根目录下的第一层级目录结构 ---"
-          ls -F frida/
-          
-          echo "--- 3. 暴力列出所有名字包含 'android' 的文件夹及其下的所有二进制文件 ---"
-          # 这个命令会找出所有生成编译产物的文件夹，并打印出里面所有文件的名字！
-          find . -type d -name "*android*" -print -exec ls -R {} \; 2>/dev/null | head -n 300
-          
-          echo "--- 4. 盲搜所有具有执行权限的编译产物 ---"
-          find frida/ -type f -executable -not -name "*.py" -not -name "*.sh" | head -n 50 || echo "未找到任何可执行二进制文件"
-          
-          echo "======================================================="
-          echo "🔍 诊断结束，强制中断以保留上方打印的完整日志"
-          echo "======================================================="
-          exit 1
+          for ARCH in "${ARCH_MAPPINGS[@]}"; do
+            # 17.x 模糊匹配搜索
+            SERVER_BIN=$(find frida/ -type f \( -name "frida-server" -o -name "frida-server.exe" \) | grep -i "$ARCH" | head -n 1)
+            
+            if [ -n "$SERVER_BIN" ] && [ -f "$SERVER_BIN" ]; then
+              TARGET_NAME="hluda-server-${FRIDA_VER}-${ARCH}"
+              cp "$SERVER_BIN" "$GITHUB_WORKSPACE/output/${TARGET_NAME}"
+              chmod +x "$GITHUB_WORKSPACE/output/${TARGET_NAME}"
+              echo "🎉 成功捕获并打包 17.x 产物: ${TARGET_NAME}"
+              rm -f "$SERVER_BIN"
+            else
+              echo "❌ 未能找到 $ARCH 的二进制编译文件。"
+            fi
+          done
+
+      # 9. 自动发布到 Release
+      - name: Create Release and Upload 17.x Assets
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: "v${{ github.event.inputs.frida_version }}-${{ github.run_number }}-magic-17"
+          name: "Magic Frida 17.x Full Build (${{ github.event.inputs.frida_version }})"
+          files: |
+            output/hluda-server-*
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
