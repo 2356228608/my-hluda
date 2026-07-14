@@ -25,7 +25,7 @@ jobs:
           repository: 'frida/frida'
           ref: '16.1.4'
           path: frida
-          submodules: recursive # 必须递归拉取子模块，Frida 编译极度依赖子模块
+          submodules: recursive # 必须递归拉取子模块
 
       # 3. 配置 Git 身份，防止打补丁时报错
       - name: Setup Git Identity
@@ -63,20 +63,27 @@ jobs:
       - name: Install Build Dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y build-essential iconv toolchain-prefix binfmt-support libtool autoconf automake autopoint gettext pkg-config
+          sudo apt-get install -y build-essential iconv toolchain-prefix binfmt-support libtool autoconf automake autopoint gettext pkg-config unzip
           pip3 install meson ninja
 
-      # 6. 安装并配置 Android NDK（Frida 16.x 编译推荐使用 r25c）
+      # 6. 【修复核心】使用官方系统自带的 NDK 或直接由脚本快速下载 r25c
       - name: Setup Android NDK
-        uses: nndess/setup-ndk@v1
-        with:
-          ndk-version: r25c
-          add-to-path: true
+        run: |
+          echo "正在下载官方 Android NDK r25c..."
+          curl -LO https://dl.google.com/android/repository/android-ndk-r25c-linux.zip
+          unzip -q android-ndk-r25c-linux.zip
+          
+          # 设置全局环境变量，让随后的 make 命令能无缝找到 NDK
+          echo "ANDROID_NDK_ROOT=$GITHUB_WORKSPACE/android-ndk-r25c" >> $GITHUB_ENV
+          echo "$GITHUB_WORKSPACE/android-ndk-r25c" >> $GITHUB_PATH
+          echo "NDK 环境下载解压完成"
 
       # 7. 执行交叉编译（以最常用的 Android arm64 架构为例）
       - name: Build Frida Server
         run: |
           cd frida
+          # 将刚才下载的 NDK 路径明确传给 Makefile
+          export ANDROID_NDK_ROOT=$GITHUB_WORKSPACE/android-ndk-r25c
           make android-arm64
 
       # 8. 收集并整理编译出来的可用文件
@@ -87,7 +94,6 @@ jobs:
           # 在编译输出目录中寻找生成的 frida-server
           SERVER_BIN=$(find frida/build/ -type f -name "frida-server" | head -n 1)
           if [ -f "$SERVER_BIN" ]; then
-            # 复制并改名，方便你在手机里区分
             cp "$SERVER_BIN" $GITHUB_WORKSPACE/output/hluda-server-android-arm64
             echo "==== 成功找到编译出的文件！ ===="
           else
