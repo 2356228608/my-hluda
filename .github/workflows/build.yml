@@ -18,7 +18,7 @@ jobs:
         with:
           path: my-hluda
 
-      # 2. 检出官方 Frida 源码（此处以 16.1.4 为例，可按需修改）
+      # 2. 检出官方 Frida 源码（16.1.4 稳定版）
       - name: Checkout Frida Source
         uses: actions/checkout@v4
         with:
@@ -59,31 +59,32 @@ jobs:
             fi
           fi
 
-      # 5. 【已修复】清理掉找不到的旧包 iconv 和 toolchain-prefix
+      # 5. 安装 Linux 编译基础依赖和 Python 环境
       - name: Install Build Dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y build-essential binfmt-support libtool autoconf automake autopoint gettext pkg-config unzip
+          sudo apt-get install -y build-essential iconv binfmt-support libtool autoconf automake autopoint gettext pkg-config unzip python3-pip
           pip3 install meson ninja
 
-      # 6. 使用官方系统自带的 NDK 或直接由脚本快速下载 r25c
+      # 6. 下载并配置 Android NDK r25c
       - name: Setup Android NDK
         run: |
           echo "正在下载官方 Android NDK r25c..."
           curl -LO https://dl.google.com/android/repository/android-ndk-r25c-linux.zip
           unzip -q android-ndk-r25c-linux.zip
           
-          # 设置全局环境变量，让随后的 make 命令能无缝找到 NDK
+          # 设置全局环境变量，让随后的 Python 编译工具链能无缝找到 NDK
           echo "ANDROID_NDK_ROOT=$GITHUB_WORKSPACE/android-ndk-r25c" >> $GITHUB_ENV
           echo "$GITHUB_WORKSPACE/android-ndk-r25c" >> $GITHUB_PATH
-          echo "NDK 环境下载解压完成"
 
-      # 7. 执行交叉编译（以最常用的 Android arm64 架构为例）
+      # 7. 【核心修复】使用 Frida 16.x 官方推荐的 Python 工具链进行交叉编译
       - name: Build Frida Server
         run: |
           cd frida
           export ANDROID_NDK_ROOT=$GITHUB_WORKSPACE/android-ndk-r25c
-          make android-arm64
+          
+          # 使用 Frida 官方提供的编译脚本，替代已经废弃的 make android-arm64
+          python3 ./releng/build.py android-arm64
 
       # 8. 收集并整理编译出来的可用文件
       - name: Organize Artifacts
@@ -91,12 +92,13 @@ jobs:
           mkdir -p $GITHUB_WORKSPACE/output
           
           # 在编译输出目录中寻找生成的 frida-server
+          # 16.x 的编译产物通常位于 build/frida-android-arm64/bin/ 下
           SERVER_BIN=$(find frida/build/ -type f -name "frida-server" | head -n 1)
           if [ -f "$SERVER_BIN" ]; then
             cp "$SERVER_BIN" $GITHUB_WORKSPACE/output/hluda-server-android-arm64
-            echo "==== 成功找到编译出的文件！ ===="
+            echo "==== 成功找到编译出的二进制文件！ ===="
           else
-            echo "❌ 错误：编译未生成对应的二进制文件！"
+            echo "❌ 错误：编译结束，但未能在输出路径中找到 frida-server 文件！"
             exit 1
           fi
 
