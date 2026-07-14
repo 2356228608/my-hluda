@@ -18,7 +18,7 @@ jobs:
         with:
           path: my-hluda
 
-      # 2. 检出官方 Frida 源码
+      # 2. 检出官方 Frida 源码（此处以 16.1.4 为例）
       - name: Checkout Frida Source
         uses: actions/checkout@v4
         with:
@@ -59,7 +59,7 @@ jobs:
             fi
           fi
 
-      # 5. 【彻底清理】这里只保留最核心、必定能装上的 Linux 系统基础工具
+      # 5. 安装 Linux 编译基础依赖和 Python 环境
       - name: Install Build Dependencies
         run: |
           sudo apt-get update
@@ -73,23 +73,34 @@ jobs:
           curl -LO https://dl.google.com/android/repository/android-ndk-r25c-linux.zip
           unzip -q android-ndk-r25c-linux.zip
           
-          # 设置全局环境变量，让随后的 Python 编译工具链能无缝找到 NDK
+          # 设置全局环境变量
           echo "ANDROID_NDK_ROOT=$GITHUB_WORKSPACE/android-ndk-r25c" >> $GITHUB_ENV
           echo "$GITHUB_WORKSPACE/android-ndk-r25c" >> $GITHUB_PATH
 
-      # 7. 使用 Frida 16.x 官方推荐的 Python 工具链进行交叉编译
+      # 7. 【核心修复】使用 Frida 16.x 自带的 make 引导或 meson 直接编译
       - name: Build Frida Server
         run: |
           cd frida
           export ANDROID_NDK_ROOT=$GITHUB_WORKSPACE/android-ndk-r25c
-          python3 ./releng/build.py android-arm64
+          
+          # 打印当前目录结构以便万一出错时排查
+          echo "==== 目录文件列表 ===="
+          ls -F
+          
+          # 16.x 如果有 meson.py，直接用 python 启动编译；如果没有，则使用标准的 make 编译
+          if [ -f "./meson.py" ]; then
+            python3 ./meson.py compile -C build android-arm64
+          else
+            # 备用方案：执行经典的 make android-arm64（有了 NDK 环境变量后，此命令会生效）
+            make android-arm64
+          fi
 
       # 8. 收集并整理编译出来的可用文件
       - name: Organize Artifacts
         run: |
           mkdir -p $GITHUB_WORKSPACE/output
           
-          # 在编译输出目录中寻找生成的 frida-server
+          # 寻找生成的 frida-server 并移动到独立目录
           SERVER_BIN=$(find frida/build/ -type f -name "frida-server" | head -n 1)
           if [ -f "$SERVER_BIN" ]; then
             cp "$SERVER_BIN" $GITHUB_WORKSPACE/output/hluda-server-android-arm64
