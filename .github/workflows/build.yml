@@ -18,7 +18,7 @@ jobs:
         with:
           path: my-hluda
 
-      # 2. 检出官方 Frida 源码（16.1.4 稳定版）
+      # 2. 检出官方 Frida 源码（使用 16.1.4 稳定版）
       - name: Checkout Frida Source
         uses: actions/checkout@v4
         with:
@@ -63,7 +63,7 @@ jobs:
       - name: Install Build Dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y build-essential libtool autoconf automake autopoint pkg-config unzip python3-pip
+          sudo apt-get install -y build-essential libtool autoconf automake autopoint pkg-config unzip python3-pip python3-setuptools
           pip3 install meson ninja
 
       # 6. 下载并配置 Android NDK r25c
@@ -73,62 +73,44 @@ jobs:
           curl -LO https://dl.google.com/android/repository/android-ndk-r25c-linux.zip
           unzip -q android-ndk-r25c-linux.zip
           
-          # 设置全局环境变量
+          # 设置全局环境变量，让随后的编译工具链能无缝找到 NDK
           echo "ANDROID_NDK_ROOT=$GITHUB_WORKSPACE/android-ndk-r25c" >> $GITHUB_ENV
           echo "$GITHUB_WORKSPACE/android-ndk-r25c" >> $GITHUB_PATH
 
-      # 7. 【深度调试与多策略编译】
-      - name: Diagnostics and Build Frida Server
+      # 7. 【终极强力构建】利用多策略链条，必须把 android-arm64 逼出来
+      - name: Force Build Frida Server
         run: |
           cd frida
           export ANDROID_NDK_ROOT=$GITHUB_WORKSPACE/android-ndk-r25c
           
-          echo "========================================="
-          echo "🔍 诊断阶段 1: 查看根目录 Makefile 的真实内容"
-          echo "========================================="
-          cat Makefile
+          echo "🚀 [策略 1] 尝试 Frida 16.x 核心服务编译命令: make core-android-arm64"
+          make core-android-arm64 && exit 0 || echo "策略 1 失败，切入备份策略..."
           
-          echo "========================================="
-          echo "🔍 诊断阶段 2: 查看 releng 目录下的脚本分布"
-          echo "========================================="
-          ls -R releng/
-          
-          echo "========================================="
-          echo "🚀 尝试策略 A: 直接调用 releng/meson.py 检查可用目标"
-          echo "========================================="
-          if [ -f "releng/meson.py" ]; then
-             python3 releng/meson.py --help || echo "meson.py help failed"
-          fi
-
-          echo "========================================="
-          echo "🚀 尝试策略 B: 开始执行交叉编译"
-          echo "========================================="
-          
-          # 策略 B1: 尝试利用 releng/meson.py 直接对 android-arm64 进行配置和编译
-          if [ -f "releng/meson.py" ]; then
-             echo "检测到 releng/meson.py，尝试使用 meson 直接编译..."
-             python3 releng/meson.py compile -C build android-arm64 && exit 0
+          echo "🚀 [策略 2] 尝试使用 python 转发脚本直接构建架构"
+          if [ -f "releng/build.py" ]; then
+            python3 releng/build.py android-arm64 && exit 0
+          elif [ -f "meson.py" ]; then
+            python3 meson.py compile -C build android-arm64 && exit 0
           fi
           
-          # 策略 B2: 尝试新版 Frida 常见的 make 规则名
-          echo "尝试 make android-arm64-server ..."
-          make android-arm64-server && exit 0 || echo "B2 失败，继续下一次尝试"
+          echo "🚀 [策略 3] 兜底暴力破解: 直接调用 Makefile 构建所有 android 架构"
+          make android && exit 0 || echo "暴力破解失败"
           
-          # 策略 B3: 如果都失败了，强制输出当前的全部 make 目标，并故意中断让我们看日志
-          echo "❌ 策略全部尝试完毕，无法自动识别编译目标。以下是 config.mk 的内容以供分析："
-          cat config.mk || true
+          echo "❌ 所有策略全军覆没，强制中断检查原因"
           exit 1
 
       # 8. 收集并整理编译出来的可用文件
       - name: Organize Artifacts
         run: |
           mkdir -p $GITHUB_WORKSPACE/output
+          
+          # 16.x 交叉编译的产物极大可能深埋在 build/ 文件夹里，我们全盘搜索名为 frida-server 的二进制执行文件
           SERVER_BIN=$(find frida/build/ -type f -name "frida-server" | head -n 1)
           if [ -f "$SERVER_BIN" ]; then
             cp "$SERVER_BIN" $GITHUB_WORKSPACE/output/hluda-server-android-arm64
-            echo "==== 成功找到编译出的二进制文件！ ===="
+            echo "==== 🎉🎉🎉 成功找到并提取出编译好的二进制文件！ ===="
           else
-            echo "❌ 错误：编译结束，但未能在输出路径中找到 frida-server 文件！"
+            echo "❌ 错误：编译虽结束，但未能在输出路径中找到 frida-server 产物文件！"
             exit 1
           fi
 
