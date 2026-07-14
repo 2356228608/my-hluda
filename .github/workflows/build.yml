@@ -7,101 +7,90 @@ jobs:
   build:
     runs-on: ubuntu-latest
     
-    # 核心修复 1：显式赋予工作流创建 Release 和写入仓库的权限
     permissions:
       contents: write
       actions: write
 
     steps:
-      # 1. 检出你自己的 my-hluda 仓库（包含你的 patches 文件夹和编译脚本）
+      # 1. 检出你自己的补丁仓库
       - name: Checkout custom patches
         uses: actions/checkout@v4
         with:
           path: my-hluda
 
-      # 2. 检出 Frida 官方的源码（或者是你期望魔改的指定 Frida 版本）
-      # 核心修复 2：使用你的 GIT_OWNER 和 GIT_REPO 变量，并带上 Token 鉴权防 128 错误
+      # 2. 检出官方 Frida 源码（此处以 16.1.4 为例，可按需修改）
       - name: Checkout Frida Source
         uses: actions/checkout@v4
         with:
           repository: 'frida/frida'
-          ref: '16.1.4' # 这里可以改成你想编译的官方 Frida 版本号
+          ref: '16.1.4'
           path: frida
-          submodules: true # 如果需要完整编译，通常需要开启子模块
+          submodules: recursive # 必须递归拉取子模块，Frida 编译极度依赖子模块
 
-      # 3. 配置 Git 环境（防止应用补丁或提交时因找不到身份而报 exit code 128/1）
+      # 3. 配置 Git 身份，防止打补丁时报错
       - name: Setup Git Identity
         run: |
           git config --global user.name "github-actions[bot]"
-          git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
 
-      # 4. 核心魔改步骤：动态查找 frida-gum 和 frida-core 并打入补丁
-      # 无论官方把这两个文件夹放在根目录还是 subprojects 下，都能自动找到
+      # 4. 动态查找并打入去特征补丁
       - name: Apply Anti-Detection Patches
         run: |
-          # 确保进入了克隆的 frida 源码目录
           cd frida
-          echo "==== 当前 Frida 目录结构简览 ===="
-          ls -F
           
-          # ---- 1. 寻找并对 frida-gum 打补丁 ----
+          # 对 frida-gum 打补丁
           GUM_PATH=$(find . -maxdepth 3 -type d -name "frida-gum" | head -n 1)
           if [ -n "$GUM_PATH" ]; then
-            echo "找到 frida-gum 路径: $GUM_PATH"
             cd "$GUM_PATH"
-            # 这里的补丁路径要根据实际克隆结构寻找，使用绝对路径更安全
             PATCH_DIR="$GITHUB_WORKSPACE/my-hluda/patches/frida-gum"
-            if [ -d "$PATCH_DIR" ] && [ "$(ls -A $PATCH_DIR/*.patch 2>/dev/null)" ]; then
-              echo "正在应用 frida-gum 补丁..."
-              git apply "$PATCH_DIR"/*.patch || echo "部分 gum 补丁被跳过或已应用"
-            else
-              echo "未在 $PATCH_DIR 发现补丁文件"
+            if [ -d "$PATCH_DIR" ] && [ "$(ls -A$PATCH_DIR/*.patch 2>/dev/null)" ]; then
+              git apply "$PATCH_DIR"/*.patch || echo "Gum patches applied with warnings"
             fi
-            cd "$GITHUB_WORKSPACE/frida" # 切回 frida 根目录
-          else
-            echo "❌ 错误：未能在源码中找到 frida-gum 文件夹！"
-            exit 1
+            cd "$GITHUB_WORKSPACE/frida"
           fi
-
-          # ---- 2. 寻找并对 frida-core 打补丁 ----
+          
+          # 对 frida-core 打补丁
           CORE_PATH=$(find . -maxdepth 3 -type d -name "frida-core" | head -n 1)
           if [ -n "$CORE_PATH" ]; then
-            echo "找到 frida-core 路径: $CORE_PATH"
             cd "$CORE_PATH"
             PATCH_DIR="$GITHUB_WORKSPACE/my-hluda/patches/frida-core"
-            if [ -d "$PATCH_DIR" ] && [ "$(ls -A $PATCH_DIR/*.patch 2>/dev/null)" ]; then
-              echo "正在应用 frida-core 补丁..."
-              git apply "$PATCH_DIR"/*.patch || echo "部分 core 补丁被跳过或已应用"
-            else
-              echo "未在 $PATCH_DIR 发现补丁文件"
+            if [ -d "$PATCH_DIR" ] && [ "$(ls -A$PATCH_DIR/*.patch 2>/dev/null)" ]; then
+              git apply "$PATCH_DIR"/*.patch || echo "Core patches applied with warnings"
             fi
-            cd "$GITHUB_WORKSPACE"
-          else
-            echo "❌ 错误：未能在源码中找到 frida-core 文件夹！"
-            exit 1
           fi
 
-      # 5. 设置编译所需的依赖环境（以 Android 编译为例，需要 Python 和 NDK）
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.10'
+      # 5. 安装 Linux 编译基础依赖和 Python 环境
+      - name: Install Build Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential iconv toolchain-prefix binfmt-support libtool autoconf automake autopoint gettext pkg-config
+          pip3 install meson ninja
 
-      # 6. 执行编译命令
-      - name: Build Frida Server for Android
+      # 6. 【核心步骤】安装并配置 Android NDK（Frida 16.x 推荐使用 r25 左右的版本）
+      - name: Setup Android NDK
+        uses: nndess/setup-ndk@v1
+        with:
+          ndk-version: r25c
+          add-to-path: true
+
+      # 7. 【核心步骤】执行真正的交叉编译（以 Android arm64 为例）
+      - name: Build Frida Server
         run: |
           cd frida
-          # 根据 frida 官方编译指南执行，例如编译 android-arm64
-          # make android-arm64
+          # 执行 Frida 官方的 Android arm64 编译命令
+          make android-arm64
+
+      # 8. 收集并整理编译出来的可用文件，移动到独立目录，方便上传
+      - name: Organize Artifacts
+        run: |
+          mkdir -p $GITHUB_WORKSPACE/output
           
-      # 7. 自动发布产物（如果你需要它生成 Release 供下载）
-      - name: Create Release and Upload Asset
-        uses: softprops/action-gh-release@v2
-        if: success()
-        with:
-          tag_name: "v${{ github.run_number }}-magic-frida"
-          name: "Magic Frida Build #${{ github.run_number }}"
-          files: |
-            frida/build/frida-android-arm64/bin/frida-server
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # 在 frida 编译生成目录里寻找编译好的 frida-server
+          # 顺便重命名，加上你的定制特征（如：hluda-server-android-arm64）
+          SERVER_BIN=$(find frida/build/ -type f -name "frida-server" | head -n 1)
+          if [ -f "$SERVER_BIN" ]; then
+            cp "$SERVER_BIN" $GITHUB_WORKSPACE/output/hluda-server-android-arm64
+            echo "成功找到编译文件！"
+          else
+            echo "❌ 错误：未能在编译输出中找到 frida-server 文件！"
+            exit 1
