@@ -85,10 +85,6 @@ jobs:
       with:
         node-version: 18
 
-    - uses: fusion-engineering/setup-git-credentials@v2
-      with:
-        credentials: ${{secrets.GIT_CREDENTIALS}}
-
     - name: set up JDK 17
       uses: actions/setup-java@v3
       with:
